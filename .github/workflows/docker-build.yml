@@ -1,0 +1,152 @@
+name: Docker Build & Test
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - 'package.json'
+      - 'backend/requirements*.txt'
+  push:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+
+jobs:
+  docker-build-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Create test environment file
+      run: |
+        cat > .env << EOF
+        # Test environment variables
+        NEXT_PUBLIC_SUPABASE_URL=http://localhost:54321
+        NEXT_PUBLIC_SUPABASE_ANON_KEY=test-anon-key
+        SUPABASE_URL=http://localhost:54321
+        SUPABASE_ANON_KEY=test-anon-key
+        SUPABASE_SERVICE_ROLE_KEY=test-service-key
+        OPENAI_API_KEY=test-openai-key
+        N8N_WEBHOOK_URL=http://localhost:5678/webhook/test
+        N8N_API_KEY=test-n8n-key
+        REDIS_URL=redis://localhost:6379
+        POSTGRES_URL=postgresql://postgres:password@localhost:5432/test_db
+        JWT_SECRET_KEY=test-jwt-secret-key-for-development-only
+        ALGORITHM=HS256
+        ACCESS_TOKEN_EXPIRE_MINUTES=30
+        EOF
+    
+    - name: Build backend image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        file: ./backend/Dockerfile
+        push: false
+        tags: ai-business-backend:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build frontend image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.frontend
+        push: false
+        tags: ai-business-frontend:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Test Docker Compose
+      run: |
+        echo "🧪 Testing Docker Compose setup..."
+        
+        # Test development setup
+        docker-compose -f docker-compose.dev.yml config
+        
+        # Test production setup
+        docker-compose config
+        
+        echo "✅ Docker Compose configuration is valid"
+    
+    - name: Start services for integration test
+      run: |
+        echo "🚀 Starting services for integration testing..."
+        docker-compose -f docker-compose.dev.yml up -d
+        
+        # Wait for services to be ready
+        echo "⏳ Waiting for services to start..."
+        sleep 30
+    
+    - name: Run integration tests
+      run: |
+        echo "🧪 Running integration tests..."
+        
+        # Check if backend is responding
+        docker-compose -f docker-compose.dev.yml exec -T backend-dev curl -f http://localhost:8000/health || {
+          echo "❌ Backend health check failed"
+          docker-compose -f docker-compose.dev.yml logs backend-dev
+          exit 1
+        }
+        
+        # Check Redis connection
+        docker-compose -f docker-compose.dev.yml exec -T redis-dev redis-cli ping || {
+          echo "❌ Redis connection failed"
+          exit 1
+        }
+        
+        echo "✅ All integration tests passed"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "🧹 Cleaning up test environment..."
+        docker-compose -f docker-compose.dev.yml down -v
+        docker system prune -f
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run Hadolint (Dockerfile linting)
+      uses: hadolint/hadolint-action@v3.1.0
+      with:
+        dockerfile: Dockerfile.frontend
+        failure-threshold: warning
+    
+    - name: Run Hadolint for backend
+      uses: hadolint/hadolint-action@v3.1.0
+      with:
+        dockerfile: backend/Dockerfile
+        failure-threshold: warning
+    
+    - name: Build images for scanning
+      run: |
+        docker build -t ai-business-frontend:scan -f Dockerfile.frontend .
+        docker build -t ai-business-backend:scan -f backend/Dockerfile backend/
+    
+    - name: Scan frontend image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'ai-business-frontend:scan'
+        format: 'table'
+        exit-code: '1'
+        severity: 'CRITICAL,HIGH'
+    
+    - name: Scan backend image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'ai-business-backend:scan'
+        format: 'table'
+        exit-code: '1'
+        severity: 'CRITICAL,HIGH'

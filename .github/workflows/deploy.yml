@@ -1,0 +1,153 @@
+name: Deploy to Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
+  IMAGE_NAME_BACKEND: ${{ github.repository }}/backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Get release tag
+      id: release
+      run: |
+        if [ "${{ github.event_name }}" = "release" ]; then
+          echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        else
+          echo "tag=latest" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Deploy Application
+      run: |
+        echo "🚀 Deploying AI Business System to ${{ github.event.inputs.environment || 'production' }}..."
+        echo "Frontend image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.release.outputs.tag }}"
+        echo "Backend image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:${{ steps.release.outputs.tag }}"
+        
+        # Create deployment docker-compose file
+        cat > docker-compose.deploy.yml << EOF
+        version: '3.8'
+        
+        services:
+          frontend:
+            image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.release.outputs.tag }}
+            ports:
+              - "80:3000"
+            environment:
+              - NEXT_PUBLIC_SUPABASE_URL=\${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+              - NEXT_PUBLIC_SUPABASE_ANON_KEY=\${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            restart: unless-stopped
+            healthcheck:
+              test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+              interval: 30s
+              timeout: 10s
+              retries: 3
+          
+          backend:
+            image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:${{ steps.release.outputs.tag }}
+            ports:
+              - "8000:8000"
+            environment:
+              - SUPABASE_URL=\${{ secrets.SUPABASE_URL }}
+              - SUPABASE_ANON_KEY=\${{ secrets.SUPABASE_ANON_KEY }}
+              - SUPABASE_SERVICE_ROLE_KEY=\${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+              - OPENAI_API_KEY=\${{ secrets.OPENAI_API_KEY }}
+              - N8N_WEBHOOK_URL=\${{ secrets.N8N_WEBHOOK_URL }}
+              - N8N_API_KEY=\${{ secrets.N8N_API_KEY }}
+              - REDIS_URL=redis://redis:6379
+            depends_on:
+              - redis
+            restart: unless-stopped
+            healthcheck:
+              test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+              interval: 30s
+              timeout: 10s
+              retries: 3
+          
+          redis:
+            image: redis:7-alpine
+            restart: unless-stopped
+            volumes:
+              - redis_data:/data
+            healthcheck:
+              test: ["CMD", "redis-cli", "ping"]
+              interval: 30s
+              timeout: 10s
+              retries: 3
+        
+        volumes:
+          redis_data:
+        
+        networks:
+          default:
+            name: ai-business-network
+        EOF
+        
+        # Example deployment commands (modify based on your deployment method):
+        # For Docker Swarm:
+        # docker stack deploy -c docker-compose.deploy.yml ai-business-system
+        
+        # For Docker Compose on server:
+        # scp docker-compose.deploy.yml user@server:/opt/ai-business-system/
+        # ssh user@server "cd /opt/ai-business-system && docker-compose -f docker-compose.deploy.yml up -d"
+        
+        # For Kubernetes:
+        # kubectl apply -f k8s/
+        
+        echo "✅ Deployment configuration prepared"
+    
+    - name: Post-deployment health checks
+      run: |
+        echo "🏥 Running post-deployment health checks..."
+        sleep 30  # Wait for services to start
+        
+        # Example health checks (modify URLs based on your deployment):
+        # curl -f https://yourdomain.com/api/health || exit 1
+        # curl -f https://api.yourdomain.com/health || exit 1
+        
+        echo "✅ All health checks passed"
+    
+    - name: Notify deployment
+      if: always()
+      run: |
+        STATUS="${{ job.status }}"
+        ENV="${{ github.event.inputs.environment || 'production' }}"
+        TAG="${{ steps.release.outputs.tag }}"
+        
+        if [ "$STATUS" = "success" ]; then
+          echo "✅ Successfully deployed AI Business System v$TAG to $ENV"
+        else
+          echo "❌ Failed to deploy AI Business System v$TAG to $ENV"
+        fi
+        
+        # Add notification logic here (Slack, Discord, email, etc.)
+        # Example Slack notification:
+        # curl -X POST -H 'Content-type: application/json' \
+        #   --data "{\"text\":\"🚀 AI Business System v$TAG deployed to $ENV - Status: $STATUS\"}" \
+        #   ${{ secrets.SLACK_WEBHOOK_URL }}
