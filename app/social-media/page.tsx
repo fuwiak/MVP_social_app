@@ -131,21 +131,21 @@ export default function SocialMediaManager() {
 
   const PostCard = ({ post }: { post: typeof mockPosts[0] }) => {
     const platform = platformConfig[post.platform as keyof typeof platformConfig]
-    const statusColors = {
+    const statusColors: Record<string, string> = {
       posted: 'bg-green-100 text-green-800',
       scheduled: 'bg-blue-100 text-blue-800',
       draft: 'bg-gray-100 text-gray-800',
       failed: 'bg-red-100 text-red-800'
     }
 
-    const StatusIcon = {
+    const StatusIcon: Record<string, any> = {
       posted: CheckCircle,
       scheduled: Clock3,
       draft: Clock,
       failed: XCircle
     }
 
-    const IconComponent = StatusIcon[post.status as keyof typeof StatusIcon]
+    const IconComponent = StatusIcon[post.status] || Clock
 
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-6 hover:shadow-md transition-shadow">
@@ -153,7 +153,7 @@ export default function SocialMediaManager() {
           <div className="flex items-center gap-3">
             <div className={`w-3 h-3 rounded-full ${platform.bgColor}`}></div>
             <span className="font-medium text-gray-900">{platform.name}</span>
-            <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[post.status]} flex items-center gap-1`}>
+            <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[post.status] || 'bg-gray-100 text-gray-800'} flex items-center gap-1`}>
               <IconComponent className="w-3 h-3" />
               {post.status}
             </span>
